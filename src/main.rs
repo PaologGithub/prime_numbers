@@ -1,4 +1,5 @@
-use std::{sync::mpsc::{self, Receiver, Sender}, thread, time::Instant, usize};
+use std::{thread, time::Instant, usize};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use progress_bar::{
     Color, Style, finalize_progress_bar, init_progress_bar, print_progress_bar_info, set_progress_bar_action, set_progress_bar_progress,
@@ -20,6 +21,7 @@ impl BitVec {
         }
     }
 
+    #[inline]
     pub fn set(&mut self, index: usize, value: bool) {
         if index > self.len {
             panic!("index {} is greater than length {}", index, self.len);
@@ -34,6 +36,7 @@ impl BitVec {
         }
     }
 
+    #[inline]
     pub fn get(&self, index: usize) -> bool {
         if index > self.len {
             panic!("index {} is greater than length {}", index, self.len);
@@ -103,9 +106,9 @@ fn stdout_thread(end: usize, receiver: Receiver<usize>) -> Vec<usize> {
 fn main() {
     let end: usize = 5_368_709_120;
 
-    let (tx, rx): (Sender<usize>, Receiver<usize>) = mpsc::channel();
+    let (tx, rx): (Sender<usize>, Receiver<usize>) = unbounded();
 
-    let calculation_thread = thread::spawn(move || {
+    let calculation_thread: thread::JoinHandle<()> = thread::spawn(move || {
         calculate_thread(end, tx);
     });
 
