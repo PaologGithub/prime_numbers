@@ -12,6 +12,8 @@ use progress_bar::{
     Color, Style, finalize_progress_bar, init_progress_bar, print_progress_bar_info, set_progress_bar_action, set_progress_bar_progress,
 };
 
+const BATCH_SIZE: usize = 1000;
+
 /// To store each `bool` as a single bit
 struct BitVec {
     /// Each element stores 8 bool
@@ -55,14 +57,20 @@ impl BitVec {
     }
 }
 
-async fn calculate_thread(end: usize, sender: UnboundedSender<usize>) {
+async fn calculate_thread(end: usize, sender: UnboundedSender<Vec<usize>>) {
     // true if not prime
     let mut is_composite = BitVec::new(end + 1);
+    let mut batch = Vec::with_capacity(BATCH_SIZE); // Batching
 
     for i in 2..=end {
         if !is_composite.get(i) {
-            // We can say here that the stdout thread won't finish, so won't drop tx, so unwrap isn't required
-            let _ = sender.send(i); 
+            batch.push(i);
+            
+            if batch.len() >= BATCH_SIZE {
+                // We can say here that the stdout thread won't finish, so won't drop tx, so unwrap isn't required
+                let _ = sender.send(batch);
+                batch = Vec::with_capacity(BATCH_SIZE);
+            } 
 
             let mut j = i * i;
             while j <= end {
@@ -72,39 +80,40 @@ async fn calculate_thread(end: usize, sender: UnboundedSender<usize>) {
         }
     }
 
-    drop(sender); // Kill the channel
+    if !batch.is_empty() {
+        let _ = sender.send(batch);
+    }
 }
 
-async fn stdout_thread(end: usize, mut receiver: UnboundedReceiver<usize>) -> Vec<usize> {
+async fn stdout_thread(end: usize, mut receiver: UnboundedReceiver<Vec<usize>>) -> Vec<usize> {
     init_progress_bar(end);
     
     let mut primes: Vec<usize> = Vec::with_capacity((end as f64 / (end as f64).ln()) as usize);
     let mut start = Instant::now();
 
-    while let Some(prime) = receiver.recv().await {
-        primes.push(prime);
+    while let Some(batch) = receiver.recv().await {
+        let last = batch[batch.len() - 1];
+        primes.extend(batch);
         
-        if primes.len() % 1000 == 0 {
-            let elapsed = start.elapsed().as_secs_f64();
-            let speed = 1000.0 / elapsed;
-            
-            set_progress_bar_action(
-                &format!("{:.0} p/s", speed),
-                Color::Blue,
-                Style::Bold
-            );
-            
-            print_progress_bar_info(
-                "Found",
-                &format!("{} primes (last: {})", primes.len(), prime),
-                Color::Green,
-                Style::Bold,
-            );
-            
-            start = Instant::now();
-        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let speed = BATCH_SIZE as f64 / elapsed;
+        
+        set_progress_bar_action(
+            &format!("{:.0} p/s", speed),
+            Color::Blue,
+            Style::Bold
+        );
+        
+        print_progress_bar_info(
+            "Found",
+            &format!("{} primes (last: {})", primes.len(), last),
+            Color::Green,
+            Style::Bold,
+        );
+        
+        start = Instant::now();
 
-        set_progress_bar_progress(prime);
+        set_progress_bar_progress(last);
     }
     
     finalize_progress_bar();
@@ -115,7 +124,7 @@ async fn stdout_thread(end: usize, mut receiver: UnboundedReceiver<usize>) -> Ve
 async fn main() {
     let end: usize = 5_368_709_120;
 
-    let (tx, rx): (UnboundedSender<usize>, UnboundedReceiver<usize>) = unbounded_channel();
+    let (tx, rx): (UnboundedSender<Vec<usize>>, UnboundedReceiver<Vec<usize>>) = unbounded_channel();
 
     let _calculation_thread = task::spawn(async move {
         calculate_thread(end, tx).await;
