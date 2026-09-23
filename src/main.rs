@@ -1,5 +1,12 @@
-use std::{thread, time::Instant, usize};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use tokio::{
+    task,
+    time::Instant,
+    sync::mpsc::{
+        unbounded_channel,
+        UnboundedReceiver,
+        UnboundedSender
+    }
+};
 
 use progress_bar::{
     Color, Style, finalize_progress_bar, init_progress_bar, print_progress_bar_info, set_progress_bar_action, set_progress_bar_progress,
@@ -48,13 +55,14 @@ impl BitVec {
     }
 }
 
-fn calculate_thread(end: usize, sender: Sender<usize>) {
+async fn calculate_thread(end: usize, sender: UnboundedSender<usize>) {
     // true if not prime
     let mut is_composite = BitVec::new(end + 1);
 
     for i in 2..=end {
         if !is_composite.get(i) {
-            sender.send(i).unwrap();
+            // We can say here that the stdout thread won't finish, so won't drop tx, so unwrap isn't required
+            let _ = sender.send(i); 
 
             let mut j = i * i;
             while j <= end {
@@ -67,13 +75,13 @@ fn calculate_thread(end: usize, sender: Sender<usize>) {
     drop(sender); // Kill the channel
 }
 
-fn stdout_thread(end: usize, receiver: Receiver<usize>) -> Vec<usize> {
+async fn stdout_thread(end: usize, mut receiver: UnboundedReceiver<usize>) -> Vec<usize> {
     init_progress_bar(end);
     
     let mut primes: Vec<usize> = Vec::with_capacity((end as f64 / (end as f64).ln()) as usize);
     let mut start = Instant::now();
 
-    while let Ok(prime) = receiver.recv() {
+    while let Some(prime) = receiver.recv().await {
         primes.push(prime);
         
         if primes.len() % 1000 == 0 {
@@ -103,20 +111,21 @@ fn stdout_thread(end: usize, receiver: Receiver<usize>) -> Vec<usize> {
     primes
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let end: usize = 5_368_709_120;
 
-    let (tx, rx): (Sender<usize>, Receiver<usize>) = unbounded();
+    let (tx, rx): (UnboundedSender<usize>, UnboundedReceiver<usize>) = unbounded_channel();
 
-    let calculation_thread: thread::JoinHandle<()> = thread::spawn(move || {
-        calculate_thread(end, tx);
+    let _calculation_thread = task::spawn(async move {
+        calculate_thread(end, tx).await;
     });
 
-    let stdout_thread = thread::spawn(move || {
-        stdout_thread(end, rx)
+    let stdout_thread = task::spawn(async move {
+        stdout_thread(end, rx).await
     });
 
-    let primes = stdout_thread.join().unwrap();
+    let primes = stdout_thread.await.unwrap();
     
     println!("Found {} primes (below {})", primes.len(), end);
 }
